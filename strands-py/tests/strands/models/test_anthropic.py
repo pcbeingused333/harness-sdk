@@ -1,3 +1,4 @@
+import base64
 import copy
 import logging
 import mimetypes
@@ -353,6 +354,21 @@ def test_format_request_with_unsupported_image_format(model):
     expected_message = "content_type=<image>, format=<bmp> | unsupported format"
     with pytest.raises(TypeError, match=re.escape(expected_message)):
         model.format_request(messages)
+
+
+def test_format_request_with_redacted_reasoning(model, model_id, max_tokens):
+    messages = [
+        {
+            "role": "assistant",
+            "content": [{"reasoningContent": {"redactedContent": b"Encrypted thinking"}}],
+        },
+    ]
+
+    tru_request = model.format_request(messages)
+
+    assert tru_request["messages"][0]["content"] == [
+        {"data": base64.b64encode(b"Encrypted thinking").decode("utf-8"), "type": "redacted_thinking"},
+    ]
 
 
 def test_format_request_with_reasoning(model, model_id, max_tokens):
@@ -976,6 +992,92 @@ async def test_stream(anthropic_client, model, alist):
         "tools": [],
     }
     anthropic_client.messages.stream.assert_called_once_with(**expected_request)
+
+
+REDACTED_DATA = "RW5jcnlwdGVkIHRoaW5raW5n"
+
+
+def _redacted_thinking_turn_events():
+    """One streamed turn: a redacted thinking block followed by a tool call."""
+    return [
+        anthropic.types.RawMessageStartEvent(
+            type="message_start",
+            message=anthropic.types.Message(
+                id="msg_1",
+                type="message",
+                role="assistant",
+                model="claude-sonnet-4-5",
+                content=[],
+                stop_reason=None,
+                stop_sequence=None,
+                usage=anthropic.types.Usage(input_tokens=1, output_tokens=1),
+            ),
+        ),
+        anthropic.types.RawContentBlockStartEvent(
+            type="content_block_start",
+            index=0,
+            content_block=anthropic.types.RedactedThinkingBlock(type="redacted_thinking", data=REDACTED_DATA),
+        ),
+        anthropic.types.RawContentBlockStopEvent(type="content_block_stop", index=0),
+        anthropic.types.RawContentBlockStartEvent(
+            type="content_block_start",
+            index=1,
+            content_block=anthropic.types.ToolUseBlock(type="tool_use", id="toolu_1", name="get_weather", input={}),
+        ),
+        anthropic.types.RawContentBlockDeltaEvent(
+            type="content_block_delta",
+            index=1,
+            delta=anthropic.types.InputJSONDelta(type="input_json_delta", partial_json='{"city": "Paris"}'),
+        ),
+        anthropic.types.RawContentBlockStopEvent(type="content_block_stop", index=1),
+    ]
+
+
+def _redacted_thinking_final_message():
+    return unittest.mock.Mock(
+        stop_reason="tool_use",
+        usage=unittest.mock.Mock(model_dump=lambda: {"input_tokens": 1, "output_tokens": 2}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_redacted_thinking(anthropic_client, model, alist):
+    anthropic_client.messages.stream.return_value = generate_mock_stream_context(
+        _redacted_thinking_turn_events(), final_message=_redacted_thinking_final_message()
+    )
+
+    tru_events = await alist(model.stream([{"role": "user", "content": [{"text": "hello"}]}], None, None))
+
+    assert tru_events[1:4] == [
+        {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
+        {
+            "contentBlockDelta": {
+                "contentBlockIndex": 0,
+                "delta": {"reasoningContent": {"redactedContent": base64.b64decode(REDACTED_DATA)}},
+            }
+        },
+        {"contentBlockStop": {"contentBlockIndex": 0}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_redacted_thinking_is_sent_back_with_the_tool_result(anthropic_client, model, agenerator, alist):
+    anthropic_client.messages.stream.return_value = generate_mock_stream_context(
+        _redacted_thinking_turn_events(), final_message=_redacted_thinking_final_message()
+    )
+    chunks = await alist(model.stream([{"role": "user", "content": [{"text": "hello"}]}], None, None))
+    stop_event = (await alist(strands.event_loop.streaming.process_stream(agenerator(chunks))))[-1]
+    assistant_message = stop_event["stop"][1]
+
+    messages = [
+        {"role": "user", "content": [{"text": "hello"}]},
+        assistant_message,
+        {"role": "user", "content": [{"toolResult": {"toolUseId": "toolu_1", "status": "success", "content": []}}]},
+    ]
+    assistant_request = model.format_request(messages)["messages"][1]
+
+    assert [block["type"] for block in assistant_request["content"]] == ["redacted_thinking", "tool_use"]
+    assert assistant_request["content"][0]["data"] == REDACTED_DATA
 
 
 @pytest.mark.asyncio

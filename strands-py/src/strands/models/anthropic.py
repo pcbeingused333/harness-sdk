@@ -229,6 +229,12 @@ class AnthropicModel(Model):
                 "type": "image",
             }
 
+        if "reasoningContent" in content and "redactedContent" in content["reasoningContent"]:
+            return {
+                "data": base64.b64encode(content["reasoningContent"]["redactedContent"]).decode("utf-8"),
+                "type": "redacted_thinking",
+            }
+
         if "reasoningContent" in content:
             return {
                 "signature": content["reasoningContent"]["reasoningText"]["signature"],
@@ -971,6 +977,21 @@ class AnthropicModel(Model):
                         payload["index"] += block_index_offset
                         next_block_index = max(next_block_index, payload["index"] + 1)
                         yield self.format_chunk(payload)
+
+                        # A redacted thinking block arrives whole in its start event, with no delta.
+                        if payload["type"] == "content_block_start" and payload["content_block"]["type"] == (
+                            "redacted_thinking"
+                        ):
+                            yield {
+                                "contentBlockDelta": {
+                                    "contentBlockIndex": payload["index"],
+                                    "delta": {
+                                        "reasoningContent": {
+                                            "redactedContent": base64.b64decode(payload["content_block"]["data"]),
+                                        },
+                                    },
+                                },
+                            }
 
                     message_snapshot = None
                     try:
