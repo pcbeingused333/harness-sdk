@@ -5458,6 +5458,34 @@ describe('BedrockModel', () => {
         )
       })
 
+      // Bedrock rejects a blank guardContent text ("The guard content field ... is blank").
+      it.each([
+        ['empty', ''],
+        ['whitespace-only', '   \n '],
+      ])('does not wrap %s text in guardContent', async (_label, text) => {
+        const provider = new BedrockModel({
+          guardrailConfig: {
+            guardrailIdentifier: 'my-guardrail-id',
+            guardrailVersion: '1',
+            guardLatestUserMessage: true,
+          },
+        })
+        const messages = [new Message({ role: 'user', content: [new TextBlock(text)] })]
+
+        collectIterator(provider.stream(messages))
+
+        expect(mockConverseStreamCommand).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            messages: [
+              {
+                role: 'user',
+                content: [{ text }],
+              },
+            ],
+          })
+        )
+      })
+
       it('does not wrap assistant messages', async () => {
         const provider = new BedrockModel({
           guardrailConfig: {

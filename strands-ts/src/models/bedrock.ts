@@ -1189,6 +1189,12 @@ export class BedrockModel extends Model<BedrockModelConfig> {
     }
 
     if ('text' in formattedBlock) {
+      // Bedrock rejects a blank guardContent text, and there is nothing to screen.
+      if (!formattedBlock.text?.trim()) {
+        logger.warn('text=<blank> | nothing for bedrock guardrails to screen | skipping guardContent wrap')
+        return formattedBlock
+      }
+
       return {
         guardContent: {
           text: {
